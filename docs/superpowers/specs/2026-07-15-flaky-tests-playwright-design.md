@@ -27,7 +27,7 @@ flaky-tests-playwright/
 │   ├── dynamic-controls.page.ts
 │   ├── disappearing-elements.page.ts
 │   ├── infinite-scroll.page.ts
-│   ├── slow-resources.page.ts
+│   ├── entry-ad.page.ts
 │   ├── js-alerts.page.ts
 │   ├── file-upload.page.ts
 │   └── drag-and-drop.page.ts
@@ -59,10 +59,14 @@ Each row is one pair of specs (`tests/anti-patterns/<name>.spec.ts` and
 | Dynamic Controls | `/dynamic_controls` | Button/checkbox re-enables only after a delayed AJAX call | Locator auto-waits for actionable/enabled state before interacting |
 | Disappearing Elements | `/disappearing_elements` | A nav element is randomly present or absent on a given page load | Conditional check (`locator.count()` / `isVisible()`) instead of assuming presence |
 | Infinite Scroll | `/infinite_scroll` | Paragraph count grows asynchronously as the page is scrolled | Custom `expect.poll()` util waits for the count to increase, rather than asserting a fixed count immediately |
-| Slow Resources | `/slow` | Images/resources load at randomized, sometimes multi-second speed | Wait on the resource's load event / element state, not a fixed arbitrary timeout |
+| Entry Ad | `/entry_ad` | A modal overlay (`#modal`) appears ~500ms after page load via `setTimeout` and intercepts clicks on the underlying page until dismissed | Wait for/dismiss the modal deterministically (e.g. wait for its visible state, then close it) instead of interacting immediately or on a fixed sleep |
 | JavaScript Alerts | `/javascript_alerts` | Native `alert`/`confirm`/`prompt` dialogs race the action that triggers them | Register `page.on('dialog')` handler *before* performing the triggering action |
 | File Upload | `/upload` | Test asserts the upload confirmation text before the upload has actually completed | `setInputFiles()` plus waiting on the confirmation element itself |
 | Drag and Drop | `/drag_and_drop` | Playwright's built-in `dragTo()` frequently fails to trigger this page's native HTML5 drag JS listeners | Custom `manual-drag.ts` util: explicit mouse down → move (multi-step) → up sequence |
+
+(Originally "Slow Resources" at `/slow` — swapped for Entry Ad after verifying
+against the live site: `/slow`'s 30s delay is an invisible background AJAX
+call with no DOM effect, so there was nothing to wait on or demonstrate.)
 
 Fix technique selection follows a "native Playwright first" principle:
 6 of 8 scenarios are fixed using nothing but Playwright's built-in
