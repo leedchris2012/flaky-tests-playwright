@@ -1,0 +1,16 @@
+{
+  "name": "flaky-tests-playwright",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "playwright test tests/fixed",
+    "test:anti-patterns": "playwright test tests/anti-patterns",
+    "test:report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0",
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.4"
+  }
+}
