@@ -4,15 +4,15 @@
 
 **Goal:** Build a TypeScript Playwright UI test suite against the live
 [the-internet.herokuapp.com](https://the-internet.herokuapp.com/) demonstrating
-8 paired anti-pattern/fixed specs, each showing a real timing/race-condition
+7 paired anti-pattern/fixed specs, each showing a real timing/race-condition
 flake and its correct fix, with a green CI pipeline running only the fixed
 suite.
 
 **Architecture:** One lightweight Page Object per scenario (`pages/`), shared
 by an intentionally-flaky spec (`tests/anti-patterns/`, excluded from CI) and
-a correctly-waiting spec (`tests/fixed/`, the only suite CI runs). Two small
-utilities (`utils/`) cover the two cases Playwright's built-in auto-waiting
-genuinely can't: polling a growing count, and a native-HTML5-drag workaround.
+a correctly-waiting spec (`tests/fixed/`, the only suite CI runs). One small
+utility (`utils/`) covers the one case Playwright's built-in auto-waiting
+genuinely can't: polling a growing count.
 
 **Tech Stack:** TypeScript, `@playwright/test` (browser/`page` fixture, chromium
 only), GitHub Actions.
@@ -46,8 +46,22 @@ One scenario in the approved design didn't match live site behavior:
 
 All other scenario selectors below (`#start`/`#finish`, `#input-example`,
 the Gallery `<li>`, `.jscroll-inner p`, `#modal`, dialog behavior,
-`#uploaded-files`, `#column-a`/`#column-b`) were confirmed against the live
-page HTML/behavior, not assumed.
+`#uploaded-files`) were confirmed against the live page HTML/behavior, not
+assumed.
+
+- **Drag and Drop (`/drag_and_drop`) was dropped entirely** after Task 8,
+  before Task 9 was dispatched. The scenario's premise — that Playwright's
+  built-in `dragTo()` fails to trigger this page's native HTML5 drag
+  listeners, requiring a manual mouse-sequence workaround — no longer holds
+  with the installed Playwright version (1.61.1). Live testing showed
+  `dragTo()` succeeding reliably (3/3 trials), and even a naive single-jump
+  manual mouse sequence with no intermediate move steps also succeeded
+  reliably (5/5 trials): modern Chromium/Playwright fixed native
+  drag-event simulation, so there is no longer a reproducible flake on this
+  page. Confirmed with the user before dropping rather than forcing a
+  stale premise — the project now ships 7 scenarios, not 8. What was
+  Task 9 (Drag and Drop) has been removed; the tasks that followed it are
+  renumbered (old Task 10 → 9, old Task 11 → 10, old Task 12 → 11).
 
 ## File Structure
 
@@ -60,16 +74,14 @@ flaky-tests-playwright/
 │   ├── infinite-scroll.page.ts
 │   ├── entry-ad.page.ts
 │   ├── js-alerts.page.ts
-│   ├── file-upload.page.ts
-│   └── drag-and-drop.page.ts
+│   └── file-upload.page.ts
 ├── utils/
-│   ├── poll-for-count.ts
-│   └── manual-drag.ts
+│   └── poll-for-count.ts
 ├── tests/
 │   ├── anti-patterns/
-│   │   └── <scenario>.spec.ts        (8 files, never run in CI)
+│   │   └── <scenario>.spec.ts        (7 files, never run in CI)
 │   ├── fixed/
-│   │   └── <scenario>.spec.ts        (8 files, the only suite CI runs)
+│   │   └── <scenario>.spec.ts        (7 files, the only suite CI runs)
 │   └── fixtures/
 │       └── upload-test.txt           (static file for the upload scenario)
 ├── playwright.config.ts
@@ -517,7 +529,25 @@ git commit -m "feat: add Disappearing Elements scenario"
 
 **Interfaces:**
 - Produces: `pollForCountAbove(locator: Locator, baseline: number, timeout?: number): Promise<void>` (from `utils/poll-for-count.ts`).
-- Produces: `InfiniteScrollPage` class — `constructor(page: Page)`, `goto(): Promise<void>`, `scrollToBottom(): Promise<void>`, readonly locator `paragraphs`.
+- Produces: `InfiniteScrollPage` class — `constructor(page: Page)`, `goto(): Promise<void>`, `scrollToBottom(): Promise<void>`, readonly locator `loadedItems`.
+
+**Correction (found during Task 5 implementation, verified live):** the plan
+originally targeted `.jscroll-inner p`, assuming jscroll wraps each loaded
+chunk in a `<p>` tag. It doesn't — live inspection (headless Chromium against
+`https://the-internet.herokuapp.com/infinite_scroll`) shows each chunk is a
+`<div class="jscroll-added">` containing a raw text node, no `<p>` anywhere.
+`.jscroll-inner p` matches 0 elements forever, so the fixed spec hung until
+its poll timeout. The corrected selector is `.jscroll-added`, and the
+locator is renamed `paragraphs` → `loadedItems` since "paragraphs" is no
+longer accurate. Verified live: `.jscroll-added` count is 1 immediately
+after `goto()` resolves (an in-flight loading placeholder), settles to 2
+within ~500ms (the page auto-loads once on its own, before any user
+scroll — the initial container is short enough that jscroll's own
+near-bottom check fires on load), then reliably increases by exactly 1 per
+explicit `scrollToBottom()` call once settled. The baseline/poll pattern
+below is robust to this pre-existing auto-load noise by construction — it
+only asserts *relative* growth from whatever baseline was captured, never
+an absolute count.
 
 - [ ] **Step 1: Create the poll utility**
 
@@ -544,11 +574,11 @@ import { Page, Locator } from '@playwright/test';
 
 export class InfiniteScrollPage {
   readonly page: Page;
-  readonly paragraphs: Locator;
+  readonly loadedItems: Locator;
 
   constructor(page: Page) {
     this.page = page;
-    this.paragraphs = page.locator('.jscroll-inner p');
+    this.loadedItems = page.locator('.jscroll-added');
   }
 
   async goto(): Promise<void> {
@@ -569,23 +599,32 @@ export class InfiniteScrollPage {
 import { test, expect } from '@playwright/test';
 import { InfiniteScrollPage } from '../../pages/infinite-scroll.page';
 
-test('scrolling loads another paragraph (anti-pattern: immediate fixed count)', async ({ page }) => {
+test('scrolling loads another chunk (anti-pattern: immediate count check, no wait)', async ({ page }) => {
   const infiniteScrollPage = new InfiniteScrollPage(page);
   await infiniteScrollPage.goto();
-  await infiniteScrollPage.scrollToBottom();
 
-  // ANTI-PATTERN: jscroll's fetch-and-append for the next chunk is
-  // asynchronous. A one-shot count() snapshot taken immediately after
-  // scrolling races that request and reads 0 almost every time.
-  const count = await infiniteScrollPage.paragraphs.count();
-  expect(count).toBe(1);
+  // ANTI-PATTERN: jscroll's fetch-and-append for each new chunk is
+  // asynchronous. Capturing a "before" count and comparing it to an
+  // "after" count checked immediately post-scroll, with no wait at all,
+  // races that request — the new chunk usually hasn't arrived yet by the
+  // time the comparison runs, so this is flaky (usually fails, sometimes
+  // passes if the fetch happens to resolve unusually fast).
+  const before = await infiniteScrollPage.loadedItems.count();
+  await infiniteScrollPage.scrollToBottom();
+  const immediatelyAfter = await infiniteScrollPage.loadedItems.count();
+
+  expect(immediatelyAfter).toBeGreaterThan(before);
 });
 ```
 
-- [ ] **Step 4: Run the anti-pattern spec and confirm it fails as expected**
+- [ ] **Step 4: Run the anti-pattern spec a few times and observe the flake**
 
-Run: `npx playwright test tests/anti-patterns/infinite-scroll.spec.ts`
-Expected: `1 failed` — count is `0` at the moment it's checked, not `1`.
+Run: `npx playwright test tests/anti-patterns/infinite-scroll.spec.ts --repeat-each=5`
+Expected: a mix of passed and failed runs (verified live: roughly 3 failed /
+2 passed out of 5 in manual testing) — this scenario is genuinely
+probabilistic like Disappearing Elements, not deterministic like the other
+anti-patterns, because the zero-wait comparison sometimes gets lucky. Don't
+expect a fixed pass/fail count.
 
 - [ ] **Step 5: Write the fixed spec**
 
@@ -597,21 +636,21 @@ import { InfiniteScrollPage } from '../../pages/infinite-scroll.page';
 import { pollForCountAbove } from '../../utils/poll-for-count';
 
 test.describe('Infinite Scroll', () => {
-  // Root cause: the paragraph count grows asynchronously as jscroll fetches
-  // and appends more content after each scroll. Playwright's built-in
-  // auto-waiting only covers actionability (visible/enabled/stable) for a
-  // single element, not "wait for a count to increase" — so this scenario
-  // needs a small custom expect.poll() wrapper instead of a plain
-  // assertion.
-  test('scrolling loads another paragraph', async ({ page }) => {
+  // Root cause: the number of loaded content chunks grows asynchronously
+  // as jscroll fetches and appends more content after each scroll.
+  // Playwright's built-in auto-waiting only covers actionability
+  // (visible/enabled/stable) for a single element, not "wait for a count
+  // to increase" — so this scenario needs a small custom expect.poll()
+  // wrapper instead of a plain assertion.
+  test('scrolling loads another chunk', async ({ page }) => {
     const infiniteScrollPage = new InfiniteScrollPage(page);
     await infiniteScrollPage.goto();
 
-    const baseline = await infiniteScrollPage.paragraphs.count();
+    const baseline = await infiniteScrollPage.loadedItems.count();
     await infiniteScrollPage.scrollToBottom();
-    await pollForCountAbove(infiniteScrollPage.paragraphs, baseline);
+    await pollForCountAbove(infiniteScrollPage.loadedItems, baseline);
 
-    expect(await infiniteScrollPage.paragraphs.count()).toBeGreaterThan(baseline);
+    expect(await infiniteScrollPage.loadedItems.count()).toBeGreaterThan(baseline);
   });
 });
 ```
@@ -644,6 +683,19 @@ git commit -m "feat: add Infinite Scroll scenario"
 
 **Interfaces:**
 - Produces: `EntryAdPage` class — `constructor(page: Page)`, `goto(): Promise<void>`, `dismissModal(): Promise<void>`, readonly locators `modal`, `modalCloseText`, `restartAdLink`.
+
+**Correction (found during Task 6 implementation, verified live):** the
+anti-pattern spec originally clicked `restartAdLink` immediately after
+`goto()`, racing the 500ms modal timer. Live testing in a raw Node script
+showed this failing reliably (goto() cold-start latency exceeded 500ms), but
+inside the actual Playwright test runner — which reuses a warm browser
+across repeats — `goto()` against the live Heroku site routinely resolves
+in well under 500ms, so the click fired and succeeded *before* the modal
+appeared. Confirmed empirically: 8/8 repeats passed instead of failing.
+The fix is a deliberate `page.waitForTimeout(700)` before the click,
+guaranteeing the modal is already up (verified visible by 700ms) with no
+dependence on `goto()`'s incidental timing. Re-verified: 8/8 repeats fail
+as intended with this change.
 
 - [ ] **Step 1: Create the page object**
 
@@ -683,14 +735,16 @@ export class EntryAdPage {
 import { test } from '@playwright/test';
 import { EntryAdPage } from '../../pages/entry-ad.page';
 
-test('restart-ad link is clickable right after page load (anti-pattern: no wait for modal)', async ({ page }) => {
+test('restart-ad link is clickable right after page load (anti-pattern: guessed sleep, no dismiss)', async ({ page }) => {
   const entryAdPage = new EntryAdPage(page);
   await entryAdPage.goto();
 
   // ANTI-PATTERN: the ad modal appears ~500ms after load and covers the
-  // whole page. Clicking underlying content without waiting for/dismissing
-  // it first races that timer — Playwright reports the click as intercepted
-  // by #modal once the overlay renders.
+  // whole page. A short hard sleep just long enough for the modal to have
+  // appeared, followed by clicking underlying content without dismissing
+  // it, means the click stays genuinely blocked — Playwright reports it
+  // as intercepted by #modal, since the modal is never dismissed.
+  await page.waitForTimeout(700);
   await entryAdPage.restartAdLink.click({ timeout: 2000 });
 });
 ```
@@ -869,6 +923,22 @@ git commit -m "feat: add JavaScript Alerts scenario"
 **Interfaces:**
 - Produces: `FileUploadPage` class — `constructor(page: Page)`, `goto(): Promise<void>`, readonly locators `fileInput`, `submitButton`, `uploadedFiles`.
 
+**Correction (found before Task 8 implementation, verified live):** the
+original anti-pattern design read the confirmation text via
+`fileUploadPage.uploadedFiles.textContent()` after an unawaited click,
+expecting the missing `await` to cause a race. Live testing showed this
+reliably PASSES instead (5/5 trials) — Playwright's `Locator.textContent()`
+has its own built-in auto-wait for the element to attach to the DOM, so it
+absorbs the race regardless of whether the click was awaited. The genuine
+anti-pattern requires bypassing that auto-wait entirely: a raw
+`page.evaluate()` DOM snapshot has no retry logic, so it reads whatever is
+in the DOM at that exact instant. Verified live: 5/5 trials of
+unawaited-click + `page.evaluate()` snapshot returned `null` (element
+doesn't exist yet). The page object itself (`uploadedFiles` locator) is
+unaffected — it's still what the FIXED spec uses, since that's exactly the
+auto-waiting behavior the fix relies on. Only the anti-pattern spec's
+reading mechanism changes.
+
 - [ ] **Step 1: Create the fixture file**
 
 `tests/fixtures/upload-test.txt`:
@@ -912,16 +982,19 @@ import path from 'path';
 import { test, expect } from '@playwright/test';
 import { FileUploadPage } from '../../pages/file-upload.page';
 
-test('upload confirmation shows the filename (anti-pattern: unawaited submit click)', async ({ page }) => {
+test('upload confirmation shows the filename (anti-pattern: unawaited click + raw DOM snapshot)', async ({ page }) => {
   const fileUploadPage = new FileUploadPage(page);
   await fileUploadPage.goto();
   await fileUploadPage.fileInput.setInputFiles(path.join(__dirname, '../fixtures/upload-test.txt'));
 
   // ANTI-PATTERN: the submit button triggers a real page navigation, not
   // an in-page AJAX update. Forgetting to await the click means the next
-  // line races that navigation instead of waiting for it to finish.
+  // line races that navigation. Reading the confirmation via a raw
+  // page.evaluate() DOM query (no Playwright auto-waiting, unlike a
+  // Locator) reads whatever is on the page at that exact instant — before
+  // the navigation has completed.
   fileUploadPage.submitButton.click();
-  const text = await fileUploadPage.uploadedFiles.textContent();
+  const text = await page.evaluate(() => document.querySelector('#uploaded-files')?.textContent ?? null);
 
   expect(text).toContain('upload-test.txt');
 });
@@ -930,8 +1003,8 @@ test('upload confirmation shows the filename (anti-pattern: unawaited submit cli
 - [ ] **Step 4: Run the anti-pattern spec and confirm it fails as expected**
 
 Run: `npx playwright test tests/anti-patterns/file-upload.spec.ts`
-Expected: `1 failed` — `textContent()` throws or returns unexpected content
-because it races the navigation triggered by the unawaited click.
+Expected: `1 failed` — the DOM snapshot reads `null` because `#uploaded-files`
+doesn't exist yet at that instant (the navigation hasn't completed).
 
 - [ ] **Step 5: Write the fixed spec**
 
@@ -978,157 +1051,7 @@ git commit -m "feat: add File Upload scenario"
 
 ---
 
-### Task 9: Drag and Drop
-
-**Files:**
-- Create: `utils/manual-drag.ts`
-- Create: `pages/drag-and-drop.page.ts`
-- Create: `tests/anti-patterns/drag-and-drop.spec.ts`
-- Create: `tests/fixed/drag-and-drop.spec.ts`
-
-**Interfaces:**
-- Produces: `manualDrag(source: Locator, target: Locator): Promise<void>` (from `utils/manual-drag.ts`).
-- Produces: `DragAndDropPage` class — `constructor(page: Page)`, `goto(): Promise<void>`, readonly locators `columnA`, `columnB`, `columnAHeader`, `columnBHeader`.
-
-- [ ] **Step 1: Create the manual drag utility**
-
-`utils/manual-drag.ts`:
-
-```typescript
-import { Locator } from '@playwright/test';
-
-export async function manualDrag(source: Locator, target: Locator): Promise<void> {
-  const page = source.page();
-  const sourceBox = await source.boundingBox();
-  const targetBox = await target.boundingBox();
-
-  if (!sourceBox || !targetBox) {
-    throw new Error('manualDrag: source or target element has no bounding box');
-  }
-
-  const sourceX = sourceBox.x + sourceBox.width / 2;
-  const sourceY = sourceBox.y + sourceBox.height / 2;
-  const targetX = targetBox.x + targetBox.width / 2;
-  const targetY = targetBox.y + targetBox.height / 2;
-
-  await page.mouse.move(sourceX, sourceY);
-  await page.mouse.down();
-  await page.mouse.move(sourceX + 10, sourceY + 10, { steps: 5 });
-  await page.mouse.move(targetX, targetY, { steps: 20 });
-  await page.mouse.up();
-}
-```
-
-- [ ] **Step 2: Create the page object**
-
-`pages/drag-and-drop.page.ts`:
-
-```typescript
-import { Page, Locator } from '@playwright/test';
-
-export class DragAndDropPage {
-  readonly page: Page;
-  readonly columnA: Locator;
-  readonly columnB: Locator;
-  readonly columnAHeader: Locator;
-  readonly columnBHeader: Locator;
-
-  constructor(page: Page) {
-    this.page = page;
-    this.columnA = page.locator('#column-a');
-    this.columnB = page.locator('#column-b');
-    this.columnAHeader = page.locator('#column-a header');
-    this.columnBHeader = page.locator('#column-b header');
-  }
-
-  async goto(): Promise<void> {
-    await this.page.goto('/drag_and_drop');
-  }
-}
-```
-
-- [ ] **Step 3: Write the anti-pattern spec**
-
-`tests/anti-patterns/drag-and-drop.spec.ts`:
-
-```typescript
-import { test, expect } from '@playwright/test';
-import { DragAndDropPage } from '../../pages/drag-and-drop.page';
-
-test('dragging column A onto column B swaps their labels (anti-pattern: built-in dragTo)', async ({ page }) => {
-  const dragAndDropPage = new DragAndDropPage(page);
-  await dragAndDropPage.goto();
-
-  // ANTI-PATTERN: this page wires up native HTML5 drag-and-drop listeners
-  // (dragstart/dragover/drop). Playwright's dragTo() sends a synthetic
-  // mouse sequence that frequently fails to trigger those native drag
-  // events on this specific page, so the swap doesn't reliably happen.
-  await dragAndDropPage.columnA.dragTo(dragAndDropPage.columnB);
-
-  await expect(dragAndDropPage.columnAHeader).toHaveText('B');
-});
-```
-
-- [ ] **Step 4: Run the anti-pattern spec and observe the flake**
-
-Run: `npx playwright test tests/anti-patterns/drag-and-drop.spec.ts --repeat-each=3`
-Expected: unreliable — may fail some or all runs. This is the actual,
-well-documented flakiness of `dragTo()` against this page; don't expect a
-fixed pass/fail count.
-
-- [ ] **Step 5: Write the fixed spec**
-
-`tests/fixed/drag-and-drop.spec.ts`:
-
-```typescript
-import { test, expect } from '@playwright/test';
-import { DragAndDropPage } from '../../pages/drag-and-drop.page';
-import { manualDrag } from '../../utils/manual-drag';
-
-test.describe('Drag and Drop', () => {
-  // Root cause: Playwright's dragTo() frequently fails to trigger this
-  // page's native HTML5 drag-and-drop listeners. An explicit mouse
-  // down -> multi-step move -> up sequence reliably triggers Chromium's
-  // native drag gesture detection where the built-in helper doesn't.
-  test('dragging column A onto column B swaps their labels', async ({ page }) => {
-    const dragAndDropPage = new DragAndDropPage(page);
-    await dragAndDropPage.goto();
-
-    await manualDrag(dragAndDropPage.columnA, dragAndDropPage.columnB);
-
-    await expect(dragAndDropPage.columnAHeader).toHaveText('B');
-    await expect(dragAndDropPage.columnBHeader).toHaveText('A');
-  });
-});
-```
-
-- [ ] **Step 6: Run the fixed spec several times and confirm it always passes**
-
-Run: `npx playwright test tests/fixed/drag-and-drop.spec.ts --repeat-each=3`
-Expected: `3 passed`.
-
-- [ ] **Step 7: Typecheck**
-
-Run: `npm run typecheck`
-Expected: exits 0, no errors.
-
-- [ ] **Step 8: Run the full fixed suite and confirm everything passes together**
-
-Run: `npm test`
-Expected: `8 passed` (one per scenario: Dynamic Loading, Dynamic Controls,
-Disappearing Elements, Infinite Scroll, Entry Ad, JavaScript Alerts, File
-Upload, Drag and Drop).
-
-- [ ] **Step 9: Commit**
-
-```bash
-git add utils/manual-drag.ts pages/drag-and-drop.page.ts tests/anti-patterns/drag-and-drop.spec.ts tests/fixed/drag-and-drop.spec.ts
-git commit -m "feat: add Drag and Drop scenario"
-```
-
----
-
-### Task 10: GitHub Actions CI
+### Task 9: GitHub Actions CI
 
 **Files:**
 - Create: `.github/workflows/playwright.yml`
@@ -1199,7 +1122,7 @@ git commit -m "ci: add GitHub Actions workflow for the fixed Playwright suite"
 
 ---
 
-### Task 11: README
+### Task 10: README
 
 **Files:**
 - Create: `README.md`
@@ -1219,7 +1142,7 @@ built against [the-internet.herokuapp.com](https://the-internet.herokuapp.com/),
 a site purpose-built with pages that trigger real timing/race-condition
 bugs.
 
-Each of 8 scenarios ships as an intentionally flaky **anti-pattern** test
+Each of 7 scenarios ships as an intentionally flaky **anti-pattern** test
 alongside a properly fixed version. A short comment block above each fixed
 test explains the root cause of the flake and why the fix works. The goal is
 to demonstrate judgment about *why* a test flakes, not just produce a green
@@ -1232,23 +1155,22 @@ CI badge.
 | Dynamic Loading | `/dynamic_loading/1` | Element hidden until an async load finishes | Web-first assertion (`expect(locator).toBeVisible()`) auto-waits instead of a hard sleep |
 | Dynamic Controls | `/dynamic_controls` | Text input re-enables only after a delayed AJAX call | Locator auto-waits for actionable/enabled state before interacting |
 | Disappearing Elements | `/disappearing_elements` | A nav element is randomly present or absent on a given page load | Conditional check (`locator.count()`) instead of assuming presence |
-| Infinite Scroll | `/infinite_scroll` | Paragraph count grows asynchronously as the page is scrolled | Custom `expect.poll()` util waits for the count to increase, rather than asserting a fixed count immediately |
+| Infinite Scroll | `/infinite_scroll` | Loaded-chunk count grows asynchronously as the page is scrolled | Custom `expect.poll()` util waits for the count to increase, rather than asserting a fixed count immediately |
 | Entry Ad | `/entry_ad` | A modal overlay appears ~500ms after load and intercepts clicks until dismissed | Wait for the modal's visible state and dismiss it deterministically, instead of interacting immediately |
 | JavaScript Alerts | `/javascript_alerts` | Native `confirm()` dialogs race the action that triggers them | Register `page.on('dialog')` handler *before* performing the triggering action |
 | File Upload | `/upload` | Test reads the upload confirmation text before the triggering navigation completes | `setInputFiles()` plus an awaited click and a web-first assertion on the confirmation element |
-| Drag and Drop | `/drag_and_drop` | Playwright's built-in `dragTo()` frequently fails to trigger this page's native HTML5 drag JS listeners | Custom `manual-drag.ts` util: explicit mouse down → move (multi-step) → up sequence |
 
 Fix technique selection follows a "native Playwright first" principle: 6 of
-8 scenarios are fixed using nothing but Playwright's built-in auto-waiting
-and web-first assertions. Custom utilities in `utils/` are introduced only
-for Infinite Scroll and Drag and Drop, where Playwright's built-ins
-genuinely don't cover the situation.
+7 scenarios are fixed using nothing but Playwright's built-in auto-waiting
+and web-first assertions. A custom utility in `utils/` is introduced only
+for Infinite Scroll, where Playwright's built-ins genuinely don't cover the
+situation.
 
 ## Project structure
 
 ```
 pages/    # one lightweight Page Object per scenario, shared by both specs
-utils/    # poll-for-count.ts (Infinite Scroll), manual-drag.ts (Drag and Drop)
+utils/    # poll-for-count.ts (Infinite Scroll)
 tests/
   anti-patterns/  # intentionally flaky, NEVER run in CI
   fixed/          # correct versions, the only suite CI runs
@@ -1289,7 +1211,7 @@ git commit -m "docs: add README"
 
 ---
 
-### Task 12: Connect the GitHub remote and push
+### Task 11: Connect the GitHub remote and push
 
 **Files:** None — repository operations only.
 

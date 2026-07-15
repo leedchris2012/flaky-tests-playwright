@@ -6,7 +6,7 @@ A portfolio project demonstrating how to diagnose and fix flaky UI tests, built
 against [the-internet.herokuapp.com](https://the-internet.herokuapp.com/), a
 site purpose-built with pages that trigger real timing/race-condition bugs.
 
-Each of 8 scenarios ships as an intentionally flaky "anti-pattern" test
+Each of 7 scenarios ships as an intentionally flaky "anti-pattern" test
 alongside a properly fixed version. A short comment block above each fixed
 test explains the root cause of the flake and why the fix works. Audience is
 interviewers/hiring managers browsing GitHub — the goal is to demonstrate
@@ -29,11 +29,9 @@ flaky-tests-playwright/
 │   ├── infinite-scroll.page.ts
 │   ├── entry-ad.page.ts
 │   ├── js-alerts.page.ts
-│   ├── file-upload.page.ts
-│   └── drag-and-drop.page.ts
+│   └── file-upload.page.ts
 ├── utils/
-│   ├── poll-for-count.ts           # expect.poll wrapper for Infinite Scroll
-│   └── manual-drag.ts              # mouse-event drag sequence for Drag and Drop
+│   └── poll-for-count.ts           # expect.poll wrapper for Infinite Scroll
 ├── tests/
 │   ├── anti-patterns/              # intentionally flaky, NOT run in CI
 │   │   └── <scenario>.spec.ts
@@ -62,19 +60,29 @@ Each row is one pair of specs (`tests/anti-patterns/<name>.spec.ts` and
 | Entry Ad | `/entry_ad` | A modal overlay (`#modal`) appears ~500ms after page load via `setTimeout` and intercepts clicks on the underlying page until dismissed | Wait for/dismiss the modal deterministically (e.g. wait for its visible state, then close it) instead of interacting immediately or on a fixed sleep |
 | JavaScript Alerts | `/javascript_alerts` | Native `alert`/`confirm`/`prompt` dialogs race the action that triggers them | Register `page.on('dialog')` handler *before* performing the triggering action |
 | File Upload | `/upload` | Test asserts the upload confirmation text before the upload has actually completed | `setInputFiles()` plus waiting on the confirmation element itself |
-| Drag and Drop | `/drag_and_drop` | Playwright's built-in `dragTo()` frequently fails to trigger this page's native HTML5 drag JS listeners | Custom `manual-drag.ts` util: explicit mouse down → move (multi-step) → up sequence |
 
 (Originally "Slow Resources" at `/slow` — swapped for Entry Ad after verifying
 against the live site: `/slow`'s 30s delay is an invisible background AJAX
 call with no DOM effect, so there was nothing to wait on or demonstrate.)
 
+(Drag and Drop at `/drag_and_drop` was dropped entirely during implementation.
+The scenario's premise — that Playwright's built-in `dragTo()` fails to
+trigger this page's native HTML5 drag listeners, requiring a manual mouse
+sequence workaround — no longer holds with the installed Playwright version
+(1.61.1): live testing showed `dragTo()` succeeding reliably (3/3 trials),
+and even a naive single-jump manual mouse sequence with no intermediate
+move steps also succeeded reliably (5/5 trials). Modern Chromium/Playwright
+have fixed native drag-event simulation, so there is no longer a
+reproducible flake to demonstrate on this page. Confirmed with the user
+before dropping the scenario rather than forcing a stale premise.)
+
 Fix technique selection follows a "native Playwright first" principle:
-6 of 8 scenarios are fixed using nothing but Playwright's built-in
-auto-waiting and web-first assertions. Custom utilities in `utils/` are
-introduced only for Infinite Scroll and Drag and Drop, where Playwright's
-built-ins genuinely don't cover the situation — this keeps the portfolio's
-core message ("use the tool correctly before reaching for custom code")
-honest rather than padding every scenario with unnecessary machinery.
+6 of 7 scenarios are fixed using nothing but Playwright's built-in
+auto-waiting and web-first assertions. A custom utility in `utils/` is
+introduced only for Infinite Scroll, where Playwright's built-ins genuinely
+don't cover the situation — this keeps the portfolio's core message ("use
+the tool correctly before reaching for custom code") honest rather than
+padding every scenario with unnecessary machinery.
 
 ## Testing approach / tooling
 
@@ -104,7 +112,7 @@ serves the portfolio goal of a clean, green badge.
 
 ## Documentation
 
-- Top-level `README.md` indexes all 8 scenarios with a one-line root cause
+- Top-level `README.md` indexes all 7 scenarios with a one-line root cause
   each, plus standard setup/run instructions.
 - Each `tests/fixed/<scenario>.spec.ts` carries a short plain-language
   comment block above the test explaining the root cause and why the fix
