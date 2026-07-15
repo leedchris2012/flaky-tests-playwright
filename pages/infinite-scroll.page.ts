@@ -2,11 +2,11 @@ import { Page, Locator } from '@playwright/test';
 
 export class InfiniteScrollPage {
   readonly page: Page;
-  readonly paragraphs: Locator;
+  readonly loadedItems: Locator;
 
   constructor(page: Page) {
     this.page = page;
-    this.paragraphs = page.locator('.jscroll-inner p');
+    this.loadedItems = page.locator('.jscroll-added');
   }
 
   async goto(): Promise<void> {
