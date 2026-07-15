@@ -45,9 +45,11 @@ One scenario in the approved design didn't match live site behavior:
   already been updated to reflect this.
 
 All other scenario selectors below (`#start`/`#finish`, `#input-example`,
-the Gallery `<li>`, `.jscroll-inner p`, `#modal`, dialog behavior,
-`#uploaded-files`) were confirmed against the live page HTML/behavior, not
-assumed.
+the Gallery `<li>`, `#modal`, dialog behavior, `#uploaded-files`) were
+confirmed against the live page HTML/behavior, not assumed. (Infinite
+Scroll's selector was *not* correctly confirmed at this stage — see the
+Task 5 Correction note below; `.jscroll-inner p` matched 0 elements and was
+fixed mid-task to `.jscroll-added`.)
 
 - **Drag and Drop (`/drag_and_drop`) was dropped entirely** after Task 8,
   before Task 9 was dispatched. The scenario's premise — that Playwright's
